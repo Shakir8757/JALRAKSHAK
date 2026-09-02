@@ -1,0 +1,23 @@
+import { env } from '../config/env.js';
+import { areas, drains, waterBodies } from '../data/synthetic.js';
+
+export async function mlPredict(input:any){
+  try{
+    const response=await fetch(`${env.ML_SERVICE_URL}/predict-flood-risk`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)});
+    if(!response.ok) throw new Error(`ML ${response.status}`);
+    return await response.json();
+  }catch{
+    const rainfall=Number(input.rainfall_intensity??68), blockage=Number(input.blockage_percentage??18), elevation=Number(input.elevation??areas[0].elevation), drain=Number(input.drain_utilization??91);
+    const raw=areas[0].risk+(rainfall-68)*0.65+(blockage-18)*0.35+(drain-91)*0.25-(elevation-212)*0.18; const score=Math.max(0,Math.min(99,Math.round(raw))); const depth=Math.max(0,Number((areas[0].depth+(score-areas[0].risk)*0.012).toFixed(2)));
+    return {flood_probability:score/100,risk_level:score>=80?'CRITICAL':score>=60?'HIGH':score>=40?'MODERATE':'LOW',estimated_water_depth:depth,confidence_score:.78,reasons:[{feature:'Rainfall intensity',contribution:34},{feature:'Drain overload',contribution:26},{feature:'Low elevation',contribution:18},{feature:'Historical flooding',contribution:13},{feature:'Blockage estimate',contribution:9}],source:'backend-fallback'};
+  }
+}
+export async function simulate(rainfall:number,blockage:number){const pred=await mlPredict({rainfall_intensity:rainfall,blockage_percentage:blockage,elevation:areas[0].elevation,drain_utilization:Math.min(100,areas[0].drainUtilization+blockage*.1)});const before={risk:areas[0].risk,depth:areas[0].depth};const multiplier=1+Math.max(0,blockage-18)*.004+Math.max(0,rainfall-68)*.002;const updatedBodies=waterBodies.map((w,i)=>({...w,levelPct:Math.min(99,Number((w.levelPct+(rainfall-68)*0.18+blockage*0.06+i*1.2).toFixed(1))),overflowRisk:Math.min(99,w.levelPct+(rainfall-68)*0.18+blockage*0.06)>85?'HIGH':w.overflowRisk}));return {before,after:{risk:Math.round(pred.flood_probability*100),depth:Number((pred.estimated_water_depth*multiplier).toFixed(2))},riskLevel:pred.risk_level,flood_probability:pred.flood_probability,estimated_water_depth:Number((pred.estimated_water_depth*multiplier).toFixed(2)),risk_level:pred.risk_level,confidence_score:pred.confidence_score,reasons:pred.reasons,waterBodies:updatedBodies,factors:{rainfall,blockage,drainOverload:drains[0].utilization,elevation:areas[0].elevation}};}
+
+const graph={
+ 'Central Market':[{to:'North Junction',distance:1.5,time:4,risk:35,depth:.08},{to:'Riverside Ward',distance:1.2,time:3,risk:82,depth:.42}],
+ 'North Junction':[{to:'Central Market',distance:1.5,time:4,risk:35,depth:.08},{to:'District Hospital',distance:2.1,time:5,risk:28,depth:.06}],
+ 'Riverside Ward':[{to:'Central Market',distance:1.2,time:3,risk:82,depth:.42},{to:'District Hospital',distance:3.0,time:7,risk:74,depth:.30}],
+ 'District Hospital':[{to:'North Junction',distance:2.1,time:5,risk:28,depth:.06},{to:'Riverside Ward',distance:3.0,time:7,risk:74,depth:.30}]
+} as Record<string,{to:string;distance:number;time:number;risk:number;depth:number}[]>;
+export function route(origin:string,destination:string,priority:string){const dist:Record<string,number>={},prev:Record<string,string|undefined>={},used=new Set<string>(),nodes=Object.keys(graph);nodes.forEach(n=>dist[n]=Infinity);if(!(origin in graph)||!(destination in graph)) return {priority,origin,destination,distanceKm:0,etaMinutes:0,safetyScore:0,reason:'Unknown origin or destination in pilot road graph.',segments:[]};dist[origin]=0;for(let step=0;step<nodes.length;step++){let u:string|undefined;for(const n of nodes) if(!used.has(n)&&(u===undefined||dist[n]<dist[u])) u=n;if(u===undefined)break;used.add(u);for(const e of graph[u]||[]){const riskWeight=priority==='ambulance'||priority==='fire'?2.2:1.2;const score=e.distance+e.time*.25+e.risk*.03*riskWeight+e.depth*.9;const alt=dist[u]+score;if(alt<dist[e.to]){dist[e.to]=alt;prev[e.to]=u}}}const path:string[]=[];let cur=destination;while(cur){path.unshift(cur);if(cur===origin)break;cur=prev[cur] as string}let distanceKm=0,eta=0,maxRisk=0;for(let i=0;i<path.length-1;i++){const e=(graph[path[i]]||[]).find(x=>x.to===path[i+1]);if(e){distanceKm+=e.distance;eta+=e.time;maxRisk=Math.max(maxRisk,e.risk)}}return {priority,origin,destination,distanceKm:Number(distanceKm.toFixed(1)),etaMinutes:eta,safetyScore:Math.max(1,Math.round(100-maxRisk*.55)),reason:'Route minimizes a weighted combination of distance, travel time, flood risk and water depth.',segments:path.map((name,i)=>({name,risk:i===0?'LOW':maxRisk>70?'MODERATE':'LOW'})),avoidedFloodZones:areas.filter(a=>a.risk>=70).map(a=>a.name)};}

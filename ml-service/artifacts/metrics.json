@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.9444444444444444,
+  "precision": 0.9252336448598131,
+  "recall": 0.9801980198019802,
+  "f1": 0.9519230769230769,
+  "mae": 0.07915194056825373,
+  "rmse": 0.09838603701496737,
+  "model": "RandomForestClassifier + RandomForestRegressor",
+  "version": "1.0.0"
+}
